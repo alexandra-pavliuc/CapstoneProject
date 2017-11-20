@@ -1,0 +1,437 @@
+---
+title: "Capstone Interim"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+Upload Generic List of News Sources
+
+```{r}
+library(readr)
+NewsSourceSheet <- read_csv("D:/CBC/sept 15 all/Persona Development/Generic List of News Sources.csv", 
+                            col_types = cols(X11 = col_skip(), X12 = col_skip()))
+View(NewsSourceSheet)
+```
+convert some columns to lower
+```{r}
+NewsSourceSheet$lower_account_names<- tolower(NewsSourceSheet$lower_account_names)
+NewsSourceSheet$Target<- tolower(NewsSourceSheet$Target)
+```
+upload full tweet dataset
+```{r}
+library(readr)
+BaselineTweets <- read_csv("D:/CBC/sept 15 all/Persona Development/Full Datasets/Combined_Baseline.csv", 
+                           col_types = cols(pubdate = col_datetime(format = "%m/%d/%Y %H:%M")))
+View(BaselineTweets)
+```
+Clean the dataset
+```{r}
+#convert some columns to lower
+BaselineTweets$source<- tolower(BaselineTweets$source)
+
+#before converting text rich columns to lower, we must delete special characters or we will get an error
+BaselineTweets$tweet<- gsub("[[:digit:]]", "", BaselineTweets$tweet)
+BaselineTweets$tweet<- gsub("[^[:graph:]]", " ", BaselineTweets$tweet)
+#same for user bio
+BaselineTweets$user_bio<- gsub("[[:digit:]]", "", BaselineTweets$user_bio)
+BaselineTweets$user_bio<- gsub("[^[:graph:]]", " ", BaselineTweets$user_bio)
+#location
+BaselineTweets$user_location<- gsub("[[:digit:]]", "", BaselineTweets$user_location)
+BaselineTweets$user_location<- gsub("[^[:graph:]]", " ", BaselineTweets$user_location)
+
+#now we can convert to lower
+BaselineTweets$tweet<- tolower(BaselineTweets$tweet)
+BaselineTweets$user_bio<- tolower(BaselineTweets$user_bio)
+BaselineTweets$user_location<- tolower(BaselineTweets$user_location)
+```
+Extract news names from Tweet column
+```{r}
+library(stringr)
+BaselineTweets$Target <- str_extract(BaselineTweets$tweet, paste(NewsSourceSheet$Target, collapse="|"))
+
+#delete all rows with NA in "extracted"
+BaselineNews<- BaselineTweets[-which(is.na(BaselineTweets$Target)), ]
+#there are 27234 left. We started with 107275
+
+#for Gephi, add the newssourcesheet columns to Baseline News so you have all the attributes when visualizing
+BaselineNews<-merge(BaselineNews, NewsSourceSheet, by="Target")
+```
+export for visualization in Gephi
+```{r}
+write.csv(BaselineNews, file="BaselineNews.csv")
+```
+Create the three groups (This is a big step!)
+```{r}
+
+library(tidyverse)
+
+#using BaselineNews dataframe
+#first, create new column of group 1 (the people who tweeted to only CBC)
+BaselineNews$TweetToCBC <- 0
+BaselineNews$TweetToCBC[BaselineNews$News_Source == 'CBC']  <- 1
+
+#splitting
+BaselineNews$source_id <- as.numeric(BaselineNews$source)
+by_test <- BaselineNews %>% group_by(BaselineNews$source_id) %>% summarise(mean(TweetToCBC))     #creates avg value for each user_id, "mean(TweetToCBC)" column 0=group 3, 1=group 1, rest=group2
+#merge that column with BaselineNews, based on source_ID
+names(by_test)[names(by_test) == 'source$id'] <- 'source_id'
+BaselineNews<-merge(BaselineNews, by_test, by="source_id")
+#create 3 subgroups of tweets!
+group1 <- BaselineNews[(BaselineNews$`mean(TweetToCBC)`==1),]
+group2 <- BaselineNews[BaselineNews$`mean(TweetToCBC)`>0 & BaselineNews$`mean(TweetToCBC)`<1, ]
+group3 <- BaselineNews[(BaselineNews$`mean(TweetToCBC)`==0),]
+```
+Time for ANALYSIS. To analyze, switch group name to "group1" and execute the same code again. Record the tables as you go through them as they will change in the Environment depending on what group is loaded and being analyzed.
+```{r}
+#skip this step first time when actually analyzing Group 1
+#group1<-group2
+#group1<-group3
+```
+Frequency of News Sources
+```{r}
+group1$Target <- as.factor(group1$News_Source)
+news_freq<-data.frame(table(group1$News_Source))
+```
+Number of authors in the dataset, and other statistics
+```{r}
+apply(group1, 2, function(x)length(unique(x)))
+```
+Histogram of posting times
+```{r}
+hours <- hist(as.POSIXct(group1$pubdate, origin = "1970-01-01"), breaks = "hours", labels = TRUE, freq = TRUE, main = "Tweet Frequency by Hour", xlab = "Publication Date", ylab = "Frequency", col = "red")
+
+```
+Clean the dataset
+```{r}
+group1$tweet<- gsub("[[:punct:]]", "", group1$tweet)
+group1$tweet<- gsub("http\\w+", " ", group1$tweet)
+library(tm)
+Tweet_Content<- group1$tweet
+Tweet_Content <- as.list(Tweet_Content)
+Tweet_Corpus<-Corpus(VectorSource(Tweet_Content))
+Tweet_Corpus<-tm_map(Tweet_Corpus, removeWords, stopwords("english"))
+```
+Perform a topic model on tweets
+```{r}
+Tweet_tdm <- TermDocumentMatrix(Tweet_Corpus, control = list(wordLengths = c(1, Inf)))
+Tweet_tdm
+dtm <- as.DocumentTermMatrix(Tweet_tdm)
+library(topicmodels)
+lda <- LDA(dtm, k=5)
+term <- terms(lda, 5)
+term
+```
+Perform TF-IDF analysis on tweets
+```{r}
+dtm_tfidf <- DocumentTermMatrix(Tweet_Corpus, control = list(weighting = weightTfIdf))
+dtm_tfidf = removeSparseTerms(dtm_tfidf, 0.98)
+dtm_tfidf
+freq = data.frame(sort(colSums(as.matrix(dtm_tfidf)), decreasing=TRUE))
+```
+Now, we want to perform analyses on user metadata, so we must delete all but one tweet from each author
+```{r}
+group1no_dup = group1[!duplicated(group1$source),]
+```
+Clean user biography column
+```{r}
+Tweet_Content<-group1no_dup$user_bio
+Tweet_Content<- gsub("[[:punct:]]", "", Tweet_Content)
+Tweet_Content<- gsub("[[:digit:]]", "", Tweet_Content)
+Tweet_Content<- gsub("[^[:graph:]]", " ", Tweet_Content)
+Tweet_Content<-na.omit(Tweet_Content)
+library(tm)
+Tweet_Content <- as.list(Tweet_Content)
+Tweet_Corpus<-Corpus(VectorSource(Tweet_Content))
+Tweet_Corpus<-tm_map(Tweet_Corpus, removeWords, stopwords("english"))
+Tweet_Corpus<-na.omit(Tweet_Corpus)
+```
+Perform TF-IDF on user biography
+```{r}
+dtm_tfidf <- DocumentTermMatrix(Tweet_Corpus, control = list(weighting = weightTfIdf))
+dtm_tfidf = removeSparseTerms(dtm_tfidf, 0.99)
+dtm_tfidf
+freq = data.frame(sort(colSums(as.matrix(dtm_tfidf)), decreasing=TRUE))
+
+```
+Clean Location column
+```{r}
+Tweet_Content<-group1no_dup$user_location
+Tweet_Content<- gsub("[[:punct:]]", "", Tweet_Content)
+Tweet_Content<- gsub("[[:digit:]]", "", Tweet_Content)
+Tweet_Content<- gsub("[^[:graph:]]", " ", Tweet_Content)
+Tweet_Content<-na.omit(Tweet_Content)
+library(tm)
+Tweet_Content <- as.list(Tweet_Content)
+Tweet_Corpus<-Corpus(VectorSource(Tweet_Content))
+Tweet_Corpus<-tm_map(Tweet_Corpus, removeWords, stopwords("english"))
+Tweet_Corpus<-na.omit(Tweet_Corpus)
+inspect(Tweet_Corpus[101:130])
+```
+Perform frequency analysis on location
+```{r}
+Tweet_Corpus<-Corpus(VectorSource(Tweet_Corpus))
+Tweet_dtm <- TermDocumentMatrix(Tweet_Corpus)
+m_sent <- as.matrix(Tweet_dtm)
+v_sent <- sort(rowSums(m_sent),decreasing=TRUE)
+Tweet_word_frequency <- data.frame(word = names(v_sent),freq=v_sent)
+head(Tweet_word_frequency, 18)
+```
+Average account creation date per group
+```{r}
+date <- substr(group1no_dup$user_created_at, 27, 30)
+date<-as.numeric(date)
+mean(date)
+```
+Average Followers per group
+```{r}
+mean(group1no_dup$user_followers)
+```
+Average number of tweets per group
+```{r}
+mean(group1no_dup$user_statuses)
+```
+SENTIMENT ANALYSIS BEGINS HERE
+
+Run this line of code to increase your Java capacity if you need it
+```{r}
+options(java.parameters = "- Xmx1024m")
+gc()
+```
+required libraries
+```{r}
+library(RSentiment)
+library(ggplot2)
+```
+GROUP 1 Analysis
+```{r}
+Tweet_Content<- group1$tweet
+
+```
+Clean the data
+```{r}
+print(Tweet_Content[51:77])
+Tweet_Content<- gsub("[[:punct:]]", "", Tweet_Content)
+Tweet_Content<- gsub("[[:digit:]]", "", Tweet_Content)
+Tweet_Content<- gsub("http\\w+", " ", Tweet_Content)
+Tweet_Content <- gsub("[^[:graph:]]", " ", Tweet_Content)
+Tweet_Content <- data.frame(Tweet_Content)
+```
+Create dataframes of analysis results for each term
+```{r}
+#Trudeau
+Trudeau_sub_group <- data.frame(Tweet_Content[grep("trudeau", Tweet_Content$Tweet_Content), ])
+trudeau1<-calculate_total_presence_sentiment(Trudeau_sub_group$Tweet_Content.grep..trudeau...Tweet_Content.Tweet_Content....)
+trudeau1 <- data.frame(Term = c(0, "trudeau1"), trudeau1)
+colnames(trudeau1) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+trudeau1 = trudeau1[-1,]
+N_Trudeau1<-NROW(Trudeau_sub_group)
+trudeau1["N_obs"]<-N_Trudeau1
+#Tax
+Tax_sub_group <- data.frame(Tweet_Content[grep("tax", Tweet_Content$Tweet_Content), ])
+tax1<-calculate_total_presence_sentiment(Tax_sub_group$Tweet_Content.grep..tax...Tweet_Content.Tweet_Content....)
+tax1 <- data.frame(Term = c(0, "tax1"), tax1)
+colnames(tax1) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+tax1 = tax1[-1,]
+N_Tax1<-NROW(Tax_sub_group)
+tax1["N_obs"]<-N_Tax1
+#NDP
+NDP_sub_group <- data.frame(Tweet_Content[grep("ndp", Tweet_Content$Tweet_Content), ])
+ndp1<-calculate_total_presence_sentiment(NDP_sub_group$Tweet_Content.grep..ndp...Tweet_Content.Tweet_Content....)
+ndp1 <- data.frame(Term = c(0, "ndp1"), ndp1)
+colnames(ndp1) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+ndp1 = ndp1[-1,]
+N_NDP1<-NROW(NDP_sub_group)
+ndp1["N_obs"]<-N_NDP1
+#Trump
+Trump_sub_group <- data.frame(Tweet_Content[grep("trump", Tweet_Content$Tweet_Content), ])
+trump1<-calculate_total_presence_sentiment(Trump_sub_group$Tweet_Content.grep..trump...Tweet_Content.Tweet_Content....)
+trump1 <- data.frame(Term = c(0, "trump1"), trump1)
+colnames(trump1) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+trump1 = trump1[-1,]
+N_trump1<-NROW(Trump_sub_group)
+trump1["N_obs"]<-N_trump1
+#Music
+Music_sub_group <- data.frame(Tweet_Content[grep("music", Tweet_Content$Tweet_Content), ])
+music1<- calculate_total_presence_sentiment(Music_sub_group$Tweet_Content.grep..music...Tweet_Content.Tweet_Content....)
+music1 <- data.frame(Term = c(0, "music1"), music1)
+colnames(music1) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+music1 = music1[-1,]
+N_music1<-NROW(Music_sub_group)
+music1["N_obs"]<-N_music1
+```
+Create the final table for Group 1
+```{r}
+group1sentiment<-setNames(data.frame(matrix(ncol = 7, nrow = 0)), c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive"))
+group1sent<-rbind(group1sentiment, music1[1,], trump1[1,], ndp1[1,], tax1[1,], trudeau1[1,])
+#re-classify factor to numeric
+group1sent$Negative<-as.numeric(as.character(group1sent$Negative))
+group1sent$'Very Negative'<-as.numeric(as.character(group1sent$'Very Negative'))
+group1sent$Neutral<-as.numeric(as.character(group1sent$Neutral))
+group1sent$Positive<-as.numeric(as.character(group1sent$Positive))
+group1sent$'Very Positive'<-as.numeric(as.character(group1sent$'Very Positive'))
+#THIS IS IT!!!!!
+#GROUP 1
+group1sentimentfinal<-group1sent[ ,2:7]/c(group1sent[ ,8])
+group1sentimentfinal<-cbind(group1sent$Term, group1sentimentfinal)
+group1sentimentfinal <- data.frame(Group = c(1,1,1,1,1), group1sentimentfinal)
+colnames(group1sentimentfinal) <- c("Group", "Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+```
+GROUP 2 Analysis
+```{r}
+Tweet_Content2<- group2$tweet
+```
+Clean the tweets
+```{r}
+print(Tweet_Content2[51:77])
+Tweet_Content2<- gsub("[[:punct:]]", "", Tweet_Content2)
+Tweet_Content2<- gsub("[[:digit:]]", "", Tweet_Content2)
+Tweet_Content2<- gsub("http\\w+", " ", Tweet_Content2)
+Tweet_Content2<- gsub("[^[:graph:]]", " ", Tweet_Content2)
+Tweet_Content2<- data.frame(Tweet_Content2)
+```
+Create dataframes of each analysis result for each term
+```{r}
+#Trudeau
+Trudeau_sub_group2 <- data.frame(Tweet_Content2[grep("trudeau", Tweet_Content2$Tweet_Content2), ])
+trudeau2<-calculate_total_presence_sentiment(Trudeau_sub_group2$Tweet_Content2.grep..trudeau...Tweet_Content2.Tweet_Content2...)
+trudeau2 <- data.frame(Term = c(0, "trudeau2"), trudeau2)
+colnames(trudeau2) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+trudeau2 = trudeau2[-1,]
+N_trudeau2<-NROW(Trudeau_sub_group2)
+trudeau2["N_obs"]<-N_trudeau2
+#Tax
+Tax_sub_group2 <- data.frame(Tweet_Content2[grep("tax", Tweet_Content2$Tweet_Content2), ])
+tax2<-calculate_total_presence_sentiment(Tax_sub_group2$Tweet_Content2.grep..tax...Tweet_Content2.Tweet_Content2....)
+tax2 <- data.frame(Term = c(0, "tax2"), tax2)
+colnames(tax2) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+tax2 = tax2[-1,]
+N_tax2<-NROW(Tax_sub_group2)
+tax2["N_obs"]<-N_tax2
+#NDP
+NDP_sub_group2 <- data.frame(Tweet_Content2[grep("ndp", Tweet_Content2$Tweet_Content2), ])
+ndp2<-calculate_total_presence_sentiment(NDP_sub_group2$Tweet_Content2.grep..ndp...Tweet_Content2.Tweet_Content2....)
+ndp2 <- data.frame(Term = c(0, "ndp2"), ndp2)
+colnames(ndp2) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+ndp2 = ndp2[-1,]
+N_ndp2<-NROW(NDP_sub_group2)
+ndp2["N_obs"]<-N_ndp2
+#Trump
+Trump_sub_group2 <- data.frame(Tweet_Content2[grep("trump", Tweet_Content2$Tweet_Content2), ])
+trump2<-calculate_total_presence_sentiment(Trump_sub_group2$Tweet_Content2.grep..trump...Tweet_Content2.Tweet_Content2...)
+trump2 <- data.frame(Term = c(0, "trump2"), trump2)
+colnames(trump2) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+trump2 = trump2[-1,]
+N_trump2<-NROW(Trump_sub_group2)
+trump2["N_obs"]<-N_trump2
+#Music
+Music_sub_group2 <- data.frame(Tweet_Content2[grep("music", Tweet_Content2$Tweet_Content2), ])
+music2<- calculate_total_presence_sentiment(Music_sub_group2$Tweet_Content2.grep..music...Tweet_Content2.Tweet_Content2...)
+music2 <- data.frame(Term = c(0, "music2"), music2)
+colnames(music2) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+music2 = music2[-1,]
+N_music2<-NROW(Music_sub_group2)
+music2["N_obs"]<-N_music2
+```
+Create final Group 2 table of results
+```{r}
+group2sentiment<-setNames(data.frame(matrix(ncol = 7, nrow = 0)), c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive"))
+group2sent<-rbind(group2sentiment, music2[1,], trump2[1,], ndp2[1,], tax2[1,], trudeau2[1,])
+#re-classify factor to numeric
+group2sent$Negative<-as.numeric(as.character(group2sent$Negative))
+group2sent$'Very Negative'<-as.numeric(as.character(group2sent$'Very Negative'))
+group2sent$Neutral<-as.numeric(as.character(group2sent$Neutral))
+group2sent$Positive<-as.numeric(as.character(group2sent$Positive))
+group2sent$'Very Positive'<-as.numeric(as.character(group2sent$'Very Positive'))
+#THIS IS IT!!!!!
+group2sentimentfinal<-group2sent[ ,2:7]/c(group2sent[ ,8])
+group2sentimentfinal<-cbind(group2sent$Term, group2sentimentfinal)
+group2sentimentfinal <- data.frame(Group = c(2,2,2,2,2), group2sentimentfinal)
+colnames(group2sentimentfinal) <- c("Group", "Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+```
+GROUP 3 analysis
+```{r}
+Tweet_Content3<- group3$tweet
+```
+Clean tweets
+```{r}
+print(Tweet_Content3[51:77])
+Tweet_Content3<- gsub("[[:punct:]]", "", Tweet_Content3)
+Tweet_Content3<- gsub("[[:digit:]]", "", Tweet_Content3)
+Tweet_Content3<- gsub("http\\w+", " ", Tweet_Content3)
+Tweet_Content3 <- gsub("[^[:graph:]]", " ", Tweet_Content3)
+Tweet_Content3 <- data.frame(Tweet_Content3)
+```
+Create dataframes of each analysis result for each term
+```{r}
+#Trudeau
+Trudeau_sub_group3 <- data.frame(Tweet_Content3[grep("trudeau", Tweet_Content3$Tweet_Content3), ])
+trudeau3<-calculate_total_presence_sentiment(Trudeau_sub_group3$Tweet_Content3.grep..trudeau...Tweet_Content3.Tweet_Content3...)
+trudeau3 <- data.frame(Term = c(0, "trudeau3"), trudeau3)
+colnames(trudeau3) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+trudeau3 = trudeau3[-1,]
+N_trudeau3<-NROW(Trudeau_sub_group3)
+trudeau3["N_obs"]<-N_trudeau3
+#Tax
+Tax_sub_group3 <- data.frame(Tweet_Content3[grep("tax", Tweet_Content3$Tweet_Content3), ])
+tax3<-calculate_total_presence_sentiment(Tax_sub_group3$Tweet_Content3.grep..tax...Tweet_Content3.Tweet_Content3....)
+tax3 <- data.frame(Term = c(0, "tax3"), tax3)
+colnames(tax3) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+tax3 = tax3[-1,]
+N_tax3<-NROW(Tax_sub_group3)
+tax3["N_obs"]<-N_tax3
+#NDP
+NDP_sub_group3 <- data.frame(Tweet_Content3[grep("ndp", Tweet_Content3$Tweet_Content3), ])
+ndp3<-calculate_total_presence_sentiment(NDP_sub_group3$Tweet_Content3.grep..ndp...Tweet_Content3.Tweet_Content3....)
+ndp3 <- data.frame(Term = c(0, "ndp3"), ndp3)
+colnames(ndp3) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+ndp3 = ndp3[-1,]
+N_ndp3<-NROW(NDP_sub_group3)
+ndp3["N_obs"]<-N_ndp3
+#Trump
+Trump_sub_group3 <- data.frame(Tweet_Content3[grep("trump", Tweet_Content3$Tweet_Content3), ])
+trump3<-calculate_total_presence_sentiment(Trump_sub_group3$Tweet_Content3.grep..trump...Tweet_Content3.Tweet_Content3...)
+trump3 <- data.frame(Term = c(0, "trump3"), trump3)
+colnames(trump3) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+trump3 = trump3[-1,]
+N_trump3<-NROW(Trump_sub_group3)
+trump3["N_obs"]<-N_trump3
+#Music
+Music_sub_group3 <- data.frame(Tweet_Content3[grep("music", Tweet_Content3$Tweet_Content3), ])
+music3<- calculate_total_presence_sentiment(Music_sub_group3$Tweet_Content3.grep..music...Tweet_Content3.Tweet_Content3...)
+music3 <- data.frame(Term = c(0, "music3"), music3)
+colnames(music3) <- c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+music3 = music3[-1,]
+N_music3<-NROW(Music_sub_group3)
+music3["N_obs"]<-N_music3
+```
+Create final Group 3 table of results
+```{r}
+group3sentiment<-setNames(data.frame(matrix(ncol = 7, nrow = 0)), c("Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive"))
+group3sent<-rbind(group3sentiment, music3[1,], trump3[1,], ndp3[1,], tax3[1,], trudeau3[1,])
+#re-classify factor to numeric
+group3sent$Negative<-as.numeric(as.character(group3sent$Negative))
+group3sent$'Very Negative'<-as.numeric(as.character(group3sent$'Very Negative'))
+group3sent$Neutral<-as.numeric(as.character(group3sent$Neutral))
+group3sent$Positive<-as.numeric(as.character(group3sent$Positive))
+group3sent$'Very Positive'<-as.numeric(as.character(group3sent$'Very Positive'))
+#THIS IS IT!!!!!
+group3sentimentfinal<-group3sent[ ,2:7]/c(group3sent[ ,8])
+group3sentimentfinal<-cbind(group3sent$Term, group3sentimentfinal)
+group3sentimentfinal <- data.frame(Group = c(3, 3, 3, 3, 3), group3sentimentfinal)
+colnames(group3sentimentfinal) <- c("Group", "Term", "Sarcasm", "Negative", "Very Negative", "Neutral", "Positive", "Very Positive")
+```
+Finally, create the ggplot graph that shows negative sentiment towards the five terms
+```{r}
+sentiment<- rbind(group1sentimentfinal, group2sentimentfinal, group3sentimentfinal)
+sentiment$Term<-gsub("[[:digit:]]", "", sentiment$Term)
+sentiment$Term<-gsub("T", "t", sentiment$Term)
+sentiment$Term<-gsub("NDP", "ndp", sentiment$Term)
+sentiment$Term<-gsub("M", "m", sentiment$Term)
+sentiment$Sarcasm<-NULL
+ggplot(data=sentiment, aes(Term, Negative+sentiment$`Very Negative`, colour=Group, group=(Group))) + geom_point() + geom_line() 
+```
